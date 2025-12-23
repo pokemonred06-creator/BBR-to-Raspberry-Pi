@@ -1,15 +1,67 @@
 name: Build Raspberry Pi BBRv3 Kernel
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Manual trigger
   schedule:
-    - cron: "0 2 * * *" # Run daily at 2:00 UTC
+    - cron: "0 2 * * 0" # Check weekly on Sunday at 2:00 UTC
 
 jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      rpi_commit: ${{ steps.check.outputs.rpi_commit }}
+      bbr_commit: ${{ steps.check.outputs.bbr_commit }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Check for Upstream Updates
+        id: check
+        run: |
+          # Get latest commit from Raspberry Pi kernel
+          RPI_COMMIT=$(git ls-remote https://github.com/raspberrypi/linux.git refs/heads/rpi-6.13.y | cut -f1)
+          echo "Raspberry Pi kernel latest commit: $RPI_COMMIT"
+
+          # Get latest commit from Google BBR v3
+          BBR_COMMIT=$(git ls-remote https://github.com/google/bbr.git refs/heads/v3 | cut -f1)
+          echo "Google BBR v3 latest commit: $BBR_COMMIT"
+
+          # Read last built commits (if file exists)
+          LAST_RPI=""
+          LAST_BBR=""
+          if [ -f .last_built_commits ]; then
+            LAST_RPI=$(grep "^rpi=" .last_built_commits | cut -d= -f2 || echo "")
+            LAST_BBR=$(grep "^bbr=" .last_built_commits | cut -d= -f2 || echo "")
+          fi
+
+          echo "Last built RPi commit: $LAST_RPI"
+          echo "Last built BBR commit: $LAST_BBR"
+
+          # Determine if we should build
+          if [ "$RPI_COMMIT" != "$LAST_RPI" ] || [ "$BBR_COMMIT" != "$LAST_BBR" ]; then
+            echo "Updates found! Triggering build..."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "No updates found. Skipping build."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
+          # For manual triggers, always build
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Manual trigger detected. Forcing build..."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+          echo "rpi_commit=$RPI_COMMIT" >> $GITHUB_OUTPUT
+          echo "bbr_commit=$BBR_COMMIT" >> $GITHUB_OUTPUT
+
   build:
+    needs: check-updates
+    if: needs.check-updates.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required for creating releases
+      contents: write # Required for creating releases and updating commit file
 
     steps:
       - name: Checkout Repository
@@ -119,6 +171,36 @@ jobs:
         with:
           tag_name: v${{ env.KERNEL_VER }}-bbrv3-${{ github.run_number }}
           name: Raspberry Pi BBRv3 Kernel ${{ env.KERNEL_VER }}
+          body: |
+            ## Raspberry Pi BBRv3 Kernel
+
+            **Kernel Version:** ${{ env.KERNEL_VER }}
+
+            ### Source Commits
+            - Raspberry Pi Kernel: `${{ needs.check-updates.outputs.rpi_commit }}`
+            - Google BBR v3: `${{ needs.check-updates.outputs.bbr_commit }}`
+
+            ### Installation
+            ```bash
+            # Download and install
+            sudo dpkg -i linux-image-*.deb
+            sudo reboot
+
+            # Verify
+            uname -r
+            sysctl net.ipv4.tcp_congestion_control
+            ```
           draft: false
           prerelease: false
           files: artifacts/*.deb
+
+      - name: Update Last Built Commits
+        run: |
+          echo "rpi=${{ needs.check-updates.outputs.rpi_commit }}" > .last_built_commits
+          echo "bbr=${{ needs.check-updates.outputs.bbr_commit }}" >> .last_built_commits
+
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add .last_built_commits
+          git commit -m "Update last built commits [skip ci]" || echo "No changes to commit"
+          git push || echo "Push failed - may need to pull first"
