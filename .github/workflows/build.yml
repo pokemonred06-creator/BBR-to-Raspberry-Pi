@@ -18,15 +18,15 @@ jobs:
       - name: Install Cross-Compilation Dependencies
         run: |
           sudo apt-get update
-          # Add arm64 architecture for cross-compilation libraries
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
+          # Install native build tools and cross-compiler
+          # Note: We don't need arm64 libs - the kernel build uses CROSS_COMPILE for linking
           sudo apt-get install -y \
             git build-essential bison flex libssl-dev libelf-dev bc \
             rsync kmod cpio dwarves debhelper dh-make fakeroot \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            libssl-dev:arm64 libelf-dev:arm64
+            binutils-aarch64-linux-gnu
           echo "Debhelper version: $(dpkg -s debhelper | grep Version)"
+          echo "Cross-compiler version: $(aarch64-linux-gnu-gcc --version | head -1)"
 
       - name: Clone Raspberry Pi Kernel (rpi-6.13.y)
         run: |
