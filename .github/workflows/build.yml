@@ -1,0 +1,121 @@
+name: Build Raspberry Pi BBRv3 Kernel
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *" # Run daily at 2:00 UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required for creating releases
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Cross-Compilation Dependencies
+        run: |
+          sudo apt-get update
+          # Add arm64 architecture for cross-compilation libraries
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y \
+            git build-essential bison flex libssl-dev libelf-dev bc \
+            rsync kmod cpio dwarves debhelper dh-make fakeroot \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libssl-dev:arm64 libelf-dev:arm64
+          # Ensure debhelper-compat symlink (workaround for bindeb-pkg check)
+          echo "Debhelper version: $(dpkg -s debhelper | grep Version)"
+
+      - name: Clone Raspberry Pi Kernel (rpi-6.13.y)
+        run: |
+          # Clone shallowly to save time
+          git clone -b rpi-6.13.y --depth 1 https://github.com/raspberrypi/linux.git linux-src
+
+      - name: Merge Google BBRv3
+        working-directory: ./linux-src
+        run: |
+          git remote add google-bbr https://github.com/google/bbr.git
+          git fetch google-bbr v3
+
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+
+          # Merge BBRv3, preferring BBR's changes for conflicts (mostly networking/TCP files)
+          # We use a custom merge strategy or just "theirs" for simplicity if conflicts arise in net/ipv4
+          if git merge --allow-unrelated-histories --no-edit google-bbr/v3; then
+               echo "Merge successful"
+          else
+               echo "Merge conflict detected. Attempting to resolve by accepting incoming changes..."
+               # In a real pipeline, we might want to be more careful, but for BBR integration:
+               git merge --abort
+               git merge --strategy-option=theirs --allow-unrelated-histories --no-edit google-bbr/v3
+          fi
+
+          # Extract version for naming
+          KERNEL_VER=$(make kernelversion)
+          echo "KERNEL_VER=$KERNEL_VER" >> $GITHUB_ENV
+          echo "Detected base kernel version: $KERNEL_VER"
+
+      - name: Configure Kernel
+        working-directory: ./linux-src
+        run: |
+          # Use user provided config if available, otherwise default Pi 4 config
+          if [ -f ../pi.config ]; then
+            echo "Using provided pi.config..."
+            cp ../pi.config .config
+          else
+            echo "Using default bcm2711_defconfig..."
+            export ARCH=arm64
+            export CROSS_COMPILE=aarch64-linux-gnu-
+            make bcm2711_defconfig
+          fi
+
+          # Verify ARCH is set correctly in config or env
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # Enable BBRv3 config options
+          ./scripts/config --enable CONFIG_TCP_CONG_ADVANCED
+          ./scripts/config --enable CONFIG_NET_SCH_FQ
+          ./scripts/config --enable CONFIG_TCP_CONG_BBR
+          ./scripts/config --enable CONFIG_DEFAULT_BBR
+          ./scripts/config --set-str CONFIG_DEFAULT_TCP_CONG "bbr"
+
+          # Set Local Version
+          sed -i 's/EXTRAVERSION =/EXTRAVERSION = -bbrv3-pi/' Makefile
+
+          # Update config
+          make olddefconfig
+
+      - name: Build Kernel Packages
+        working-directory: ./linux-src
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # use all cores
+          # Use DPKG_FLAGS=-d to skip build-dependency check (we have all tools but can't satisfy virtual packages)
+          make -j$(nproc) DPKG_FLAGS=-d bindeb-pkg
+
+      - name: Move Artifacts
+        run: |
+          mkdir artifacts
+          mv linux-*.deb artifacts/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbrv3-pi-kernel
+          path: artifacts/*.deb
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.KERNEL_VER }}-bbrv3-${{ github.run_number }}
+          name: Raspberry Pi BBRv3 Kernel ${{ env.KERNEL_VER }}
+          draft: false
+          prerelease: false
+          files: artifacts/*.deb
