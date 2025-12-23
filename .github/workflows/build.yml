@@ -26,7 +26,6 @@ jobs:
             rsync kmod cpio dwarves debhelper dh-make fakeroot \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             libssl-dev:arm64 libelf-dev:arm64
-          # Ensure debhelper-compat symlink (workaround for bindeb-pkg check)
           echo "Debhelper version: $(dpkg -s debhelper | grep Version)"
 
       - name: Clone Raspberry Pi Kernel (rpi-6.13.y)
@@ -97,8 +96,9 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
 
           # use all cores
-          # Use DPKG_FLAGS=-d to skip build-dependency check (we have all tools but can't satisfy virtual packages)
-          make -j$(nproc) DPKG_FLAGS=-d bindeb-pkg
+          # Set DPKGFLAGS to skip build-dependency check (we have all tools but can't satisfy virtual packages like debhelper-compat)
+          export DPKGFLAGS="-d"
+          make -j$(nproc) bindeb-pkg DPKGFLAGS=-d
 
       - name: Move Artifacts
         run: |
