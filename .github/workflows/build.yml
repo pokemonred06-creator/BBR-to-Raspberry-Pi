@@ -97,7 +97,8 @@ jobs:
 
           # Patch Makefile.package to skip dependency check (-d flag)
           # The kernel's bindeb-pkg doesn't support DPKGFLAGS, so we patch directly
-          sed -i 's/dpkg-buildpackage --build=binary/dpkg-buildpackage -d --build=binary/' scripts/Makefile.package
+          sed -i 's/dpkg-buildpackage /dpkg-buildpackage -d /' scripts/Makefile.package
+          cat scripts/Makefile.package | grep dpkg-buildpackage  # Verify patch
 
           # Build using all cores
           make -j$(nproc) bindeb-pkg
